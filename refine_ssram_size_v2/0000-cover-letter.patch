@@ -1,0 +1,42 @@
+From 398d2a03f306d7f16a42474515281932d4eba052 Mon Sep 17 00:00:00 2001
+From: "Zhou, Wu" <wu.zhou@intel.com>
+Date: Thu, 31 Mar 2022 18:56:39 +0800
+Subject: [PATCH V2 0/2] refine the hard-coded GPA SSRAM area size
+
+The GPA SSRAM area size in pre-launched VMs was hard-coded to 8MB.
+Since this area is mapped from host SSRAM area, it will cause compile
+problem when host's SSRAM area is larger than 8MB.
+
+patch1 extracts the host's SSRAM area info into board file, and uses it
+to generate guest's SSRAM area config that fits its actual size.
+
+patch2 modifies the hard-coded SSRAM size in HV.
+
+v2:
+  1. Since SSRAM info is in each cache entry, sssram area info is not
+necessary to be extracted in board_inspector. Now it only extracts ctl bin
+info. The SSRAM area info is calculated in gpa.py.
+  2. Pass PRE_RTVM_SW_SRAM_MAX_SIZE to HV, remove START/END.
+  3. Fixed a bug that SOS removes GPA of SSRAM from ept(should be HPA).
+  4. To align with config_tools and ACPI RTCT table, Host SSRAM area size
+in HV now contains ctl bin.
+  5. Refined the SSRAM mem layout info in gpa.py.
+
+Tracked-On: #7212
+
+
+Zhou, Wu (2):
+  config-tools: extract the SSRAM area size
+  hv: refine the hard-coded GPA SSRAM area size
+
+ hypervisor/arch/x86/guest/vm.c                |  6 +--
+ hypervisor/arch/x86/rtcm.c                    |  4 ++
+ hypervisor/include/arch/x86/asm/rtct.h        | 12 +++---
+ .../board_inspector/extractors/20-cache.py    | 11 ++++++
+ misc/config_tools/static_allocators/gpa.py    | 38 ++++++++++++-------
+ misc/config_tools/xforms/misc_cfg.h.xsl       |  3 +-
+ 6 files changed, 48 insertions(+), 26 deletions(-)
+
+-- 
+2.17.1
+
