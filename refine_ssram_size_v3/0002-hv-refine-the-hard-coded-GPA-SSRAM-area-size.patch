@@ -8,9 +8,9 @@ the hard-coded GPA SSRAM area size to its actual size, so that
 pre-launched VMs can support large(>8MB) SSRAM area.
 
 When booting SOS, the SSRAM area has to be removed from Service VM's mem
-space, because they are passed-through to the pre-rt VM. The code was bugged
-since it was using the SSRAM area's GPA in the pre-rt VM. Changed it to GPA
-in Service VM.
+space, because they are passed-through to the pre-rt VM. The code was
+bugged since it was using the SSRAM area's GPA in the pre-rt VM. Changed
+it to GPA in Service VM.
 
 Another change is to add the RTCM ctl bin area size to HV's SSRAM area
 size calculation. The ctl bin is one component of the RTCM, and it is in
