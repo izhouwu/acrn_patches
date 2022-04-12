@@ -1,0 +1,28 @@
+From 31ddc180d712085d6d241cd0895e3ffe73acd26b Mon Sep 17 00:00:00 2001
+From: "Zhou, Wu" <wu.zhou@intel.com>
+Date: Tue, 12 Apr 2022 17:21:14 +0800
+Subject: [PATCH] hv: remove reinitialization of a local pointer
+
+The pointer p_elf_header32 is given the same value after it is initialized.
+It is useless and causing the code scaner's warning. Removed the extra one.
+
+Signed-off-by: Zhou, Wu <wu.zhou@intel.com>
+---
+ hypervisor/boot/guest/elf_loader.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/hypervisor/boot/guest/elf_loader.c b/hypervisor/boot/guest/elf_loader.c
+index d670910bd..33e9d820b 100644
+--- a/hypervisor/boot/guest/elf_loader.c
++++ b/hypervisor/boot/guest/elf_loader.c
+@@ -89,7 +89,6 @@ static void *do_load_elf32(struct acrn_vm *vm)
+ 	void *elf_entry = NULL, *p_elf_bss = NULL;
+ 	uint32_t i;
+ 
+-	p_elf_header32 = (struct elf32_hdr *)p_elf_img;
+ 	/* Currently only ET_EXEC is supported */
+ 	if (p_elf_header32->e_type == ET_EXEC) {
+ 		p_prg_tbl_head32 = (struct elf32_prog_entry *)(p_elf_img + p_elf_header32->e_phoff);
+-- 
+2.17.1
+
