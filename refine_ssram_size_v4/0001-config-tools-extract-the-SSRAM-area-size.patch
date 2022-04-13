@@ -1,0 +1,182 @@
+From e8ce28c0112edfec0925edf8771143ecd2ff8292 Mon Sep 17 00:00:00 2001
+From: "Zhou, Wu" <wu.zhou@intel.com>
+Date: Thu, 31 Mar 2022 18:03:24 +0800
+Subject: [PATCH V4 1/2] config-tools: extract the SSRAM area size
+
+The GPA SSRAM area size in pre-launched VMs was hard-coded to 8MB.
+
+Since this area is mapped from host SSRAM area, it will cause compile
+problem when host's SSRAM area is larger than 8MB.
+
+To solve this issue, we have to calculate SSRAM area's size in
+gpa.py, and generate a macro PRE_RTVM_SW_SRAM_MAX_SIZE for HV
+to use.
+
+PRE_RTVM_SW_SRAM_START_GPA/END_GPA can be calculated by end/size
+in HV, so they are removed.
+
+When SSRAM is not configured in the system, PRE_RTVM_SW_SRAM_MAX_SIZE
+is set to 0.
+
+Crl_bin is not needed in guest. So it's size is removed in bin_gen.py.
+
+Tracked-On: #7212
+
+Signed-off-by: Zhou, Wu <wu.zhou@intel.com>
+---
+ misc/config_tools/acpi_gen/bin_gen.py      |  7 ----
+ misc/config_tools/static_allocators/gpa.py | 38 ++++++++++++++--------
+ misc/config_tools/xforms/misc_cfg.h.xsl    | 15 ++++++---
+ 3 files changed, 34 insertions(+), 26 deletions(-)
+
+diff --git a/misc/config_tools/acpi_gen/bin_gen.py b/misc/config_tools/acpi_gen/bin_gen.py
+index 8750eadd8..08d719be2 100644
+--- a/misc/config_tools/acpi_gen/bin_gen.py
++++ b/misc/config_tools/acpi_gen/bin_gen.py
+@@ -26,10 +26,8 @@ def move_rtct_ssram_and_bin_entries(rtct, new_base_addr, new_area_max_size):
+     '''
+     if rtct.version == 1:
+         expect_ssram_type = acpiparser.rtct.ACPI_RTCT_V1_TYPE_SoftwareSRAM
+-        expect_bin_type = acpiparser.rtct.ACPI_RTCT_V1_TYPE_CRL_Binary
+     elif rtct.version == 2:
+         expect_ssram_type = acpiparser.rtct.ACPI_RTCT_V2_TYPE_SoftwareSRAM
+-        expect_bin_type = acpiparser.rtct.ACPI_RTCT_V2_TYPE_CRL_Binary
+     else:
+         raise Exception("RTCT version error! ", rtct.version)
+     top = 0
+@@ -38,17 +36,12 @@ def move_rtct_ssram_and_bin_entries(rtct, new_base_addr, new_area_max_size):
+         if entry.type == expect_ssram_type:
+             top = (entry.base + entry.size) if top < (entry.base + entry.size) else top
+             base = entry.base if base == 0 or entry.base < base else base
+-        elif entry.type == expect_bin_type:
+-            top = (entry.address + entry.size) if top < (entry.address + entry.size) else top
+-            base = entry.address if base == 0 or entry.address < base else base
+     if new_area_max_size < (top - base):
+         raise Exception("not enough space in guest VE820 SSRAM area!")
+     rtct_move_offset = new_base_addr - base
+     for entry in rtct.entries:
+         if entry.type == expect_ssram_type:
+             entry.base += rtct_move_offset
+-        elif entry.type == expect_bin_type:
+-            entry.address += rtct_move_offset
+     # re-calculate checksum
+     rtct.header.checksum = 0
+     rtct.header.checksum = 0 - sum(bytes(rtct))
+diff --git a/misc/config_tools/static_allocators/gpa.py b/misc/config_tools/static_allocators/gpa.py
+index 3eb0f30db..d0ac4a515 100644
+--- a/misc/config_tools/static_allocators/gpa.py
++++ b/misc/config_tools/static_allocators/gpa.py
+@@ -7,7 +7,7 @@
+ 
+ import sys, os, re
+ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'library'))
+-import common, lib.error, lib.lib
++import common, lib.error, lib.lib, math
+ from collections import namedtuple
+ 
+ # VMSIX devices list
+@@ -72,14 +72,13 @@ VMSIX_VBAR_SIZE = 4 * SIZE_K
+ 
+ # Constant for VIRT_ACPI_NVS_ADDR
+ """
+-VIRT_ACPI_NVS_ADDR, PRE_RTVM_SW_SRAM_BASE_GPA and PRE_RTVM_SW_SRAM_MAX_SIZE
++VIRT_ACPI_NVS_ADDR and PRE_RTVM_SW_SRAM_END_GPA
+ need to be consistant with the layout of hypervisor\arch\x86\guest\ve820.c
+ """
+ VIRT_ACPI_NVS_ADDR = 0x7FF00000
+ RESERVED_NVS_AREA = 0xB0000
+ 
+-PRE_RTVM_SW_SRAM_BASE_GPA = 0x7F5FB000
+-PRE_RTVM_SW_SRAM_MAX_SIZE = 0x800000
++PRE_RTVM_SW_SRAM_END_GPA = (0x7FDFB000 - 1)
+ 
+ class AddrWindow(namedtuple(
+         "AddrWindow", [
+@@ -470,6 +469,7 @@ def allocate_io_port(board_etree, scenario_etree, allocation_etree):
+ 
+ def allocate_ssram_region(board_etree, scenario_etree, allocation_etree):
+     # Guest physical address of the SW SRAM allocated to a pre-launched VM
++    ssram_area_max_size = 0
+     enabled = common.get_node("//SSRAM_ENABLED/text()", scenario_etree)
+     if enabled == "y":
+         pre_rt_vms = common.get_node("//vm[load_order = 'PRE_LAUNCHED_VM' and vm_type = 'RTVM']", scenario_etree)
+@@ -477,15 +477,22 @@ def allocate_ssram_region(board_etree, scenario_etree, allocation_etree):
+             vm_id = pre_rt_vms.get("id")
+             l3_sw_sram = board_etree.xpath("//cache[@level='3']/capability[@id='Software SRAM']")
+             if l3_sw_sram:
+-                start = min(map(lambda x: int(x.find("start").text, 16), l3_sw_sram))
+-                end = max(map(lambda x: int(x.find("end").text, 16), l3_sw_sram))
+-
+-                allocation_vm_node = common.get_node(f"/acrn-config/vm[@id = '{vm_id}']", allocation_etree)
+-                if allocation_vm_node is None:
+-                    allocation_vm_node = common.append_node("/acrn-config/vm", None, allocation_etree, id = vm_id)
+-                common.append_node("./ssram/start_gpa", hex(PRE_RTVM_SW_SRAM_BASE_GPA), allocation_vm_node)
+-                common.append_node("./ssram/end_gpa", hex(PRE_RTVM_SW_SRAM_BASE_GPA + (end - start)), allocation_vm_node)
+-                common.append_node("./ssram/max_size", hex(PRE_RTVM_SW_SRAM_MAX_SIZE), allocation_vm_node)
++                # Calculate SSRAM area size. Containing all cache parts
++                top = 0
++                base = 0
++                for ssram in board_etree.xpath("//cache/capability[@id='Software SRAM']"):
++                    entry_base = int(common.get_node("./start/text()", ssram), 16)
++                    entry_size = int(common.get_node("./size/text()", ssram))
++                    top = (entry_base + entry_size) if top < (entry_base + entry_size) else top
++                    base = entry_base if base == 0 or entry_base < base else base
++                ssram_area_max_size = math.ceil((top - base)/0x1000) * 0x1000
++
++            allocation_vm_node = common.get_node(f"/acrn-config/vm[@id = '{vm_id}']", allocation_etree)
++            if allocation_vm_node is None:
++                allocation_vm_node = common.append_node("/acrn-config/vm", None, allocation_etree, id = vm_id)
++            common.append_node("./ssram/start_gpa", hex(PRE_RTVM_SW_SRAM_END_GPA - ssram_area_max_size + 1), allocation_vm_node)
++            common.append_node("./ssram/end_gpa", hex(PRE_RTVM_SW_SRAM_END_GPA), allocation_vm_node)
++            common.append_node("./ssram/max_size", str(ssram_area_max_size), allocation_vm_node)
+ 
+ def allocate_log_area(board_etree, scenario_etree, allocation_etree):
+     tpm2_enabled = common.get_node(f"//vm[@id = '0']/mmio_resources/TPM2/text()", scenario_etree)
+@@ -523,7 +530,10 @@ def pt_dev_io_port_passthrough(board_etree, scenario_etree, allocation_etree):
+ ...                                                ...
+  |            TPM2 log area at  0x7FFB0000          |
+ ...                                                ...
+- |            SSRAM area at  0x7F5FB000             |
++ +--------------------------------------------------+ <--End of SSRAM area, at Offset 0x7FDFB000
++ |            SSRAM area                            |
++ +--------------------------------------------------+ <--Start of SSRAM area
++ |                                                  |    (Depends on the host SSRAM area size)
+ ...                                                ...
+  |                                                  |
+  +--------------------------------------------------+ <--Offset 0
+diff --git a/misc/config_tools/xforms/misc_cfg.h.xsl b/misc/config_tools/xforms/misc_cfg.h.xsl
+index 09c023d8e..39a7b7ae9 100644
+--- a/misc/config_tools/xforms/misc_cfg.h.xsl
++++ b/misc/config_tools/xforms/misc_cfg.h.xsl
+@@ -24,7 +24,7 @@
+     <xsl:apply-templates select="board-data/acrn-config" />
+     <xsl:apply-templates select="config-data/acrn-config" />
+ 
+-    <xsl:apply-templates select="allocation-data//ssram" />
++    <xsl:apply-templates select="allocation-data/acrn-config" />
+ 
+     <xsl:value-of select="acrn:include-guard-end('MISC_CFG_H')" />
+   </xsl:template>
+@@ -44,10 +44,15 @@
+     <xsl:call-template name="vm_boot_args" />
+   </xsl:template>
+ 
+-  <xsl:template match="allocation-data//ssram">
+-    <xsl:value-of select="acrn:define('PRE_RTVM_SW_SRAM_ENABLED', 1, '')" />
+-    <xsl:value-of select="acrn:define('PRE_RTVM_SW_SRAM_BASE_GPA', start_gpa, 'UL')" />
+-    <xsl:value-of select="acrn:define('PRE_RTVM_SW_SRAM_END_GPA', end_gpa, 'UL')" />
++  <xsl:template match="allocation-data/acrn-config">
++    <xsl:choose>
++      <xsl:when test="//ssram">
++        <xsl:value-of select="acrn:define('PRE_RTVM_SW_SRAM_MAX_SIZE', //ssram/max_size, 'UL')" />
++      </xsl:when>
++      <xsl:otherwise>
++        <xsl:value-of select="acrn:define('PRE_RTVM_SW_SRAM_MAX_SIZE', 0, 'UL')" />
++      </xsl:otherwise>
++    </xsl:choose>
+   </xsl:template>
+ 
+   <xsl:template match="BLOCK_DEVICE_INFO">
+-- 
+2.17.1
+
